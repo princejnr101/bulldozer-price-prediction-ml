@@ -1,10 +1,9 @@
-import re
-import numpy as np
-
 from __future__ import annotations
 
 import os
 import re
+import numpy as np
+
 import urllib.request
 import http.cookiejar
 from pathlib import Path
