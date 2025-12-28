@@ -1,3 +1,6 @@
+import re
+import numpy as np
+
 from __future__ import annotations
 
 import os
@@ -165,15 +168,52 @@ def health():
 @app.post("/predict", response_model=PredictResponse)
 def predict(req: PredictRequest):
     if model is None:
-        raise HTTPException(status_code=500, detail=f"Model not available. {load_error}")
+        raise HTTPException(status_code=500, detail=LOAD_ERROR or "Model not loaded")
 
     df = pd.DataFrame([{**{"saledate": req.saledate}, **req.features}])
     df = add_dateparts(df, "saledate", drop=True)
 
-    # Defensive: drop any remaining datetime cols
+    # Drop any datetime columns that survived
     dt_cols = list(df.select_dtypes(include=["datetime64[ns]", "datetime64"]).columns)
     if dt_cols:
         df = df.drop(columns=dt_cols)
 
-    pred = float(model.predict(df)[0])
-    return {"prediction": max(0.0, pred)}
+    def _try_predict(_df: pd.DataFrame) -> float:
+        pred_val = float(model.predict(_df)[0])
+        return max(0.0, pred_val)
+
+    try:
+        return {"prediction": _try_predict(df)}
+
+    except ValueError as e:
+        msg = str(e)
+
+        # ✅ Handle: "columns are missing: {'A', 'B', ...}"
+        if "columns are missing:" in msg:
+            # Extract the {...} part
+            m = re.search(r"columns are missing:\s*\{(.+)\}", msg)
+            if not m:
+                raise HTTPException(status_code=500, detail=f"ValueError: {msg}")
+
+            inside = m.group(1)
+            # Split by comma, strip quotes/spaces
+            missing_cols = []
+            for token in inside.split(","):
+                col = token.strip().strip("'").strip('"')
+                if col:
+                    missing_cols.append(col)
+
+            # Add missing as NaN so your imputers/encoders can handle them
+            for c in missing_cols:
+                if c not in df.columns:
+                    df[c] = np.nan
+
+            # Retry once
+            return {"prediction": _try_predict(df)}
+
+        # Otherwise: return real error
+        raise HTTPException(status_code=500, detail=f"ValueError: {msg}")
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+
